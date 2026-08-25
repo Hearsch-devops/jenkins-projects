@@ -1,0 +1,346 @@
+pipeline {
+
+    agent {
+        kubernetes {
+            cloud 'dynamic-agent'
+            label 'kaniko-agent'
+        }
+    }
+
+    environment {
+        IMAGE_NAME = "95337/simple-html-app"
+        STAGING_NAMESPACE = "staging"
+        PROD_NAMESPACE    = "blue-green-deploy"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Display Branch') {
+            steps {
+                echo "Branch: ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Initialize Environment') {
+            steps {
+                script {
+
+                    if (env.BRANCH_NAME == "staging") {
+                        env.NAMESPACE = env.STAGING_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "staging"
+                    } else if (env.BRANCH_NAME == "main") {
+                        env.NAMESPACE = env.PROD_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "bluegreen"
+                    } else {
+                        error "Unsupported branch: ${env.BRANCH_NAME}"
+                    }
+
+                    echo "Deployment Type : ${env.DEPLOYMENT_TYPE}"
+                    echo "Namespace       : ${env.NAMESPACE}"
+                }
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+
+                    env.SHORT_COMMIT = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${env.SHORT_COMMIT}-${env.BUILD_NUMBER}"
+
+                    env.DEPLOY_TIME = sh(
+                        script: "date '+%d %b %Y %H:%M UTC'",
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Image : ${IMAGE_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Detect Active Environment') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                container('kubectl') {
+                    script {
+
+                        def status = sh(
+                            script: """
+                            kubectl get svc simple-html-service \
+                            -n ${NAMESPACE} >/dev/null 2>&1
+                            """,
+                            returnStatus: true
+                        )
+
+                        if (status != 0) {
+                            echo "First deployment."
+                            env.ACTIVE_COLOR = "none"
+                            env.TARGET_COLOR = "blue"
+                        } else {
+                            env.ACTIVE_COLOR = sh(
+                                script: """
+                                kubectl get svc simple-html-service \
+                                -n ${NAMESPACE} \
+                                -o jsonpath='{.spec.selector.version}'
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            env.TARGET_COLOR =
+                                env.ACTIVE_COLOR == "blue" ? "green" : "blue"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Dashboard') {
+            steps {
+                script {
+
+                    if (env.DEPLOYMENT_TYPE == "staging") {
+
+                        sh """
+                        sed -i 's|{{ENVIRONMENT}}|<span class="badge staging">STAGING</span>|g' app/index.html
+                        sed -i 's|{{DEPLOYMENT_TYPE}}|<span class="badge standard">STANDARD</span>|g' app/index.html
+                        sed -i 's|{{COLOR}}|N/A|g' app/index.html
+                        sed -i 's|{{BRANCH}}|${BRANCH_NAME}|g' app/index.html
+                        sed -i 's|{{IMAGE_TAG}}|${IMAGE_NAME}:${IMAGE_TAG}|g' app/index.html
+                        sed -i 's|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g' app/index.html
+                        sed -i 's|{{DEPLOY_TIME}}|${DEPLOY_TIME}|g' app/index.html
+                        sed -i 's|{{NAMESPACE}}|${NAMESPACE}|g' app/index.html
+                        sed -i 's|{{PORT}}|30081|g' app/index.html
+                        sed -i 's|{{GIT_COMMIT}}|${SHORT_COMMIT}|g' app/index.html
+                        sed -i 's|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g' app/index.html
+                        """
+
+                    } else {
+
+                        sh """
+                        sed -i 's|{{ENVIRONMENT}}|<span class="badge production">PRODUCTION</span>|g' app/index.html
+                        sed -i 's|{{DEPLOYMENT_TYPE}}|<span class="badge blue">BLUE-GREEN</span>|g' app/index.html
+                        sed -i 's|{{COLOR}}|<span class="badge ${TARGET_COLOR}">${TARGET_COLOR.toUpperCase()}</span>|g' app/index.html
+                        sed -i 's|{{BRANCH}}|${BRANCH_NAME}|g' app/index.html
+                        sed -i 's|{{IMAGE_TAG}}|${IMAGE_NAME}:${IMAGE_TAG}|g' app/index.html
+                        sed -i 's|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g' app/index.html
+                        sed -i 's|{{DEPLOY_TIME}}|${DEPLOY_TIME}|g' app/index.html
+                        sed -i 's|{{NAMESPACE}}|${NAMESPACE}|g' app/index.html
+                        sed -i 's|{{PORT}}|30080|g' app/index.html
+                        sed -i 's|{{GIT_COMMIT}}|${SHORT_COMMIT}|g' app/index.html
+                        sed -i 's|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g' app/index.html
+
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Build & Push Image') {
+
+            steps {
+
+                container('kaniko') {
+
+                    sh """
+                    /kaniko/executor \
+                    --context=${WORKSPACE}/app \
+                    --dockerfile=${WORKSPACE}/app/Dockerfile \
+                    --destination=${IMAGE_NAME}:${IMAGE_TAG} \
+                    --cleanup
+                    """
+                }
+            }
+        }
+
+        stage('Deploy Target Environment') {
+
+            steps {
+
+                container('kubectl') {
+
+                    script {
+
+                        if (env.BRANCH_NAME == "staging") {
+
+                            sh """
+                            ...
+                            kubectl apply ...
+                            kubectl rollout status ...
+                            """
+
+                        } else {
+
+                            sh """
+                            ...
+                            kubectl apply ...
+                            kubectl rollout status ...
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Validate Deployment') {
+
+            steps {
+
+                container('kubectl') {
+
+                    script {
+
+                        if (env.DEPLOYMENT_TYPE == "staging") {
+
+                            sh """
+                            kubectl get pods -n ${NAMESPACE}
+
+                            kubectl rollout status deployment/simple-html-app \
+                            -n ${NAMESPACE}
+                            """
+
+                        } else {
+
+                            sh """
+                            kubectl get pods \
+                            -l version=${TARGET_COLOR} \
+                            -n ${NAMESPACE}
+
+                            kubectl rollout status \
+                            deployment/simple-html-app-${TARGET_COLOR} \
+                            -n ${NAMESPACE}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Ensure Service Exists') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                container('kubectl') {
+
+                    sh """
+                    kubectl apply \
+                    -f k8/service.yaml \
+                    -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+
+        stage('Approval') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+                input message: "Switch traffic to ${TARGET_COLOR}?"
+            }
+        }
+
+        stage('Switch Traffic') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                container('kubectl') {
+
+                    sh """
+                    kubectl patch service simple-html-service \
+                    -n ${NAMESPACE} \
+                    -p '{"spec":{"selector":{"app":"simple-html-app","version":"${TARGET_COLOR}"}}}'
+                    """
+                }
+            }
+        }
+
+        stage('Verify Service') {
+
+            steps {
+
+                container('kubectl') {
+
+                    script {
+
+                        if (env.DEPLOYMENT_TYPE == "staging") {
+
+                            sh """
+                            kubectl get deployment -n ${NAMESPACE}
+                            kubectl get svc -n ${NAMESPACE}
+                            kubectl get pods -o wide -n ${NAMESPACE}
+                            """
+
+                        } else {
+
+                            sh """
+                            kubectl get svc simple-html-service -n ${NAMESPACE}
+                            kubectl get endpoints simple-html-service -n ${NAMESPACE}
+                            kubectl get deployment -n ${NAMESPACE}
+                            kubectl get pods -o wide -n ${NAMESPACE}
+
+                            echo ""
+                            echo "Current Active Environment:"
+                            kubectl get svc simple-html-service \
+                            -n ${NAMESPACE} \
+                            -o jsonpath='{.spec.selector.version}'
+
+                            echo ""
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+
+        success {
+
+            script {
+
+                echo "================================="
+                echo "Deployment Type : ${env.DEPLOYMENT_TYPE}"
+                echo "Namespace       : ${env.NAMESPACE}"
+
+                if (env.DEPLOYMENT_TYPE == "bluegreen") {
+                    echo "Active Color : ${env.ACTIVE_COLOR}"
+                    echo "Target Color : ${env.TARGET_COLOR}"
+                }
+
+                echo "================================="
+            }
+        }
+
+        failure {
+
+            echo "================================="
+            echo "DEPLOYMENT FAILED"
+            echo "================================="
+        }
+    }
+    
+}

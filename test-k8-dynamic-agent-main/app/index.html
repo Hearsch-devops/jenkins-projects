@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CI/CD Deployment Dashboard</title>
+
+    <style>
+
+        *{
+            margin:0;
+            padding:0;
+            box-sizing:border-box;
+            font-family:Arial, Helvetica, sans-serif;
+        }
+
+        body{
+            background:#eef2f7;
+        }
+
+        .container{
+
+            width:900px;
+            margin:40px auto;
+            background:white;
+            border-radius:12px;
+            padding:35px;
+            box-shadow:0 10px 25px rgba(0,0,0,.15);
+
+        }
+
+        h1{
+
+            text-align:center;
+            color:#0d5cab;
+            margin-bottom:10px;
+            font-size:40px;
+
+        }
+
+        .subtitle{
+
+            text-align:center;
+            color:#666;
+            margin-bottom:35px;
+
+        }
+
+        table{
+
+            width:100%;
+            border-collapse:collapse;
+
+        }
+
+        td{
+
+            padding:16px;
+            border-bottom:1px solid #ddd;
+            font-size:18px;
+
+        }
+
+        td:first-child{
+
+            font-weight:bold;
+            width:35%;
+
+        }
+
+        .badge{
+
+            display:inline-block;
+            padding:8px 18px;
+            border-radius:20px;
+            color:white;
+            font-weight:bold;
+            font-size:15px;
+
+        }
+
+        .production{
+            background:#d9534f;
+        }
+
+        .staging{
+            background:#f0ad4e;
+        }
+
+        .blue{
+            background:#0275d8;
+        }
+
+        .green{
+            background:#28a745;
+        }
+
+        .standard{
+            background:#6c757d;
+        }
+
+        .running{
+            background:#28a745;
+        }
+
+        .footer{
+
+            margin-top:35px;
+            text-align:center;
+            color:#666;
+            font-size:16px;
+
+        }
+
+        .version{
+
+            font-family:Consolas;
+            color:#0d5cab;
+            font-weight:bold;
+
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>CI/CD Deployment Dashboard</h1>
+
+<p class="subtitle">
+Jenkins • Docker • Kubernetes • Blue-Green Deployment
+</p>
+
+<table>
+
+<tr>
+<td>Application</td>
+<td>Simple HTML App</td>
+</tr>
+
+<tr>
+<td>Environment</td>
+<td>{{ENVIRONMENT}}</td>
+</tr>
+
+<tr>
+<td>Deployment Type</td>
+<td>{{DEPLOYMENT_TYPE}}</td>
+</tr>
+
+<tr>
+<td>Active Slot</td>
+<td>{{COLOR}}</td>
+</tr>
+
+<tr>
+<td>Git Branch</td>
+<td>{{BRANCH}}</td>
+</tr>
+
+<tr>
+<td>Docker Image</td>
+<td class="version">{{IMAGE_TAG}}</td>
+</tr>
+
+<tr>
+<td>Git Commit</td>
+<td class="version">{{GIT_COMMIT}}</td>
+</tr>
+
+<tr>
+<td>Build Number</td>
+<td class="version">#{{BUILD_NUMBER}}</td>
+</tr>
+
+<tr>
+<td>Deployment Time</td>
+<td>{{DEPLOY_TIME}}</td>
+</tr>
+
+<tr>
+<td>Kubernetes Namespace</td>
+<td>{{NAMESPACE}}</td>
+</tr>
+
+<tr>
+<td>Service Port</td>
+<td>{{PORT}}</td>
+</tr>
+
+<tr>
+<td>Status</td>
+<td>
+<span class="badge running">
+RUNNING
+</span>
+</td>
+</tr>
+
+</table>
+
+<div class="footer">
+
+<b>Pipeline Flow</b><br><br>
+         
+Git → Jenkins → Docker → Docker Hub → Kubernetes → Blue-Green Deployment
+
+</div>
+
+</div>
+
+</body>
+
+</html>
