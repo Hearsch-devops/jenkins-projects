@@ -1,0 +1,178 @@
+pipeline {
+
+    agent any
+
+    environment {
+        IMAGE_NAME = "95337/simple-html-app"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Display Build Info') {
+            steps {
+                echo "======================================="
+                echo "Branch      : ${env.BRANCH_NAME}"
+                echo "Build       : ${BUILD_NUMBER}"
+                echo "======================================="
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker_login',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login \
+                    -u "$DOCKER_USER" \
+                    --password-stdin
+                    '''
+
+                }
+
+            }
+        }
+
+        stage('Generate Image Tag') {
+
+            steps {
+
+                script {
+
+                    def shortCommit = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${BUILD_NUMBER}-${shortCommit}"
+
+                    echo "Image Tag : ${IMAGE_TAG}"
+
+                }
+
+            }
+
+        }
+
+        stage('Build Docker Image') {
+
+            steps {
+
+                sh """
+                docker build \
+                -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                """
+
+            }
+
+        }
+
+        stage('Push Docker Image') {
+
+            steps {
+
+                sh """
+                docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                """
+
+            }
+
+        }
+
+        stage('Update Green Deployment') {
+
+            steps {
+
+                sh """
+
+                sed -i 's|image:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g' \
+                k8/green-deployment.yaml
+
+                echo "========== UPDATED IMAGE =========="
+
+                grep image k8/green-deployment.yaml
+
+                """
+
+            }
+
+        }
+
+        stage('Commit & Push Manifest') {
+
+            steps {
+
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'gitlab-creds',
+                        usernameVariable: 'GIT_USER',
+                        passwordVariable: 'GIT_TOKEN'
+                    )
+                ]) {
+
+                    sh """
+
+                    git config user.name "jenkins-server"
+
+                    git config user.email "jenkins-server@gmail.com"
+
+                    git add k8/green-deployment.yaml
+
+                    git commit -m "Deploy image ${IMAGE_TAG}" || true
+
+                    git push https://${GIT_USER}:${GIT_TOKEN}@gitlab.com/jenkins-group2155922/blue-green-deployment-gitops.git HEAD:refs/heads/main
+
+                    """
+
+                }
+
+            }
+
+        }
+
+    }
+
+    post {
+
+        success {
+
+            echo "======================================="
+            echo "Build Successful"
+            echo "Image pushed to Docker Hub"
+            echo "Manifest updated"
+            echo "Waiting for Argo CD Sync"
+            echo "======================================="
+
+        }
+
+        failure {
+
+            echo "======================================="
+            echo "Pipeline Failed"
+            echo "======================================="
+
+        }
+
+        always {
+
+            sh '''
+            docker image prune -af
+            '''
+
+        }
+
+    }
+
+}
