@@ -1,0 +1,340 @@
+pipeline {
+
+    agent any
+
+    environment {
+        IMAGE_NAME = "95337/simple-html-app"
+        BACKEND_IMAGE = "95337/deployment-dashboard-backend"
+
+        STAGING_NAMESPACE = "staging"
+        PROD_NAMESPACE    = "progressive-delivery"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Display Branch') {
+            steps {
+                echo "Branch : ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Initialize Environment') {
+ 
+            steps {
+
+                script {
+
+                    if (env.BRANCH_NAME == "staging") {
+                        env.NAMESPACE = env.STAGING_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "Staging"
+                    }
+                    else if (env.BRANCH_NAME == "main") {
+                        env.NAMESPACE = env.PROD_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "Progressive Delivery"
+                    }
+                    else {
+                        error "Unsupported Branch"
+                    }
+
+                }
+
+            }
+
+        }
+
+        stage('Docker Login') {
+
+            steps {
+
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker_login',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login \
+                    -u "$DOCKER_USER" \
+                    --password-stdin
+                    '''
+
+                }
+
+            }
+
+        }
+
+        stage('Set Image Tag') {
+
+            steps {
+
+                script {
+
+                    env.SHORT_COMMIT = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG="${SHORT_COMMIT}-${BUILD_NUMBER}"
+
+                    env.DEPLOY_TIME = sh(
+                        script: "date '+%d %b %Y %H:%M UTC'",
+                        returnStdout: true
+                    ).trim()
+
+                }
+
+            }
+
+        }
+
+        stage('Create Dashboard') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                sed -i "s|{{ENVIRONMENT}}|PRODUCTION|g" app/index.html
+                sed -i "s|{{DEPLOYMENT_STRATEGY}}|PROGRESSIVE DELIVERY|g" app/index.html
+
+                sed -i "s|{{BRANCH}}|${env.BRANCH_NAME}|g" app/index.html
+                sed -i "s|{{IMAGE}}|${IMAGE_NAME}:${IMAGE_TAG}|g" app/index.html
+                sed -i "s|{{COMMIT}}|${SHORT_COMMIT}|g" app/index.html
+                sed -i "s|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g" app/index.html
+                sed -i "s|{{DEPLOY_TIME}}|${DEPLOY_TIME}|g" app/index.html
+                sed -i "s|{{NAMESPACE}}|${NAMESPACE}|g" app/index.html
+                sed -i "s|{{SERVICE_PORT}}|30083|g" app/index.html
+
+                sed -i "s|{{ENV_CLASS}}|production|g" app/index.html
+                sed -i "s|{{STRATEGY_CLASS}}|progressive|g" app/index.html
+
+                """
+
+            }
+
+        }
+
+        stage('Build Docker Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker build \
+                -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                ./app
+                """
+
+            }
+
+        }
+
+        stage('Push Docker Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                """
+
+            }
+
+        }
+
+        stage('Build Backend Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker build \
+                -t ${BACKEND_IMAGE}:${IMAGE_TAG} \
+                ./backend
+                """
+
+            }
+
+        }
+
+        stage('Push Backend Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
+                """
+
+            }
+
+        }
+
+		stage('GitOps Manifests') {
+
+			when {
+				branch 'main'
+			}
+
+			steps {
+
+				sh """
+					echo "========================================="
+					echo "Updating GitOps manifests"
+					echo "Frontend: ${IMAGE_NAME}:${IMAGE_TAG}"
+					echo "Backend : ${BACKEND_IMAGE}:${IMAGE_TAG}"
+					echo "========================================="
+
+					sed -i \
+					"s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" \
+					k8/rollout/rollout.yaml
+
+					sed -i \
+					"s|image: ${BACKEND_IMAGE}:.*|image: ${BACKEND_IMAGE}:${IMAGE_TAG}|g" \
+					k8/backend/deployment.yaml
+
+					echo "Updated frontend image:"
+					grep "image:" k8/rollout/rollout.yaml
+
+					echo "Updated backend image:"
+					grep "image:" k8/backend/deployment.yaml
+				"""
+			}
+		}
+
+		stage('Commit GitOps Changes') {
+
+			when {
+				branch 'main'
+			}
+
+			steps {
+
+				withCredentials([
+                    usernamePassword(
+                        credentialsId: 'gitlab-creds',
+                        usernameVariable: 'GIT_USER',
+                        passwordVariable: 'GIT_TOKEN'
+                    )
+				]) {
+
+					sh '''
+						git config user.name "jenkins-server"
+						git config user.email "jenkins-server@gmail.com"
+
+						git add k8/rollout/rollout.yaml
+						git add k8/backend/deployment.yaml
+
+						git status
+
+						git commit \
+						-m "GitOps: deploy ${IMAGE_TAG} [skip ci]" \
+						|| echo "No GitOps changes to commit"
+
+						git push \
+						https://${GIT_USER}:${GIT_TOKEN}@gitlab.com/jenkins-group2155922/progressive-delivery-gitops.git \
+						HEAD:main
+					'''
+
+				}
+
+			}
+
+		}
+
+        stage('Verify Rollout') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                kubectl get rollout -n ${NAMESPACE}
+
+                kubectl get pods -n ${NAMESPACE}
+
+                kubectl get svc -n ${NAMESPACE}
+
+                kubectl get analysisrun -n ${NAMESPACE}
+
+                """
+
+            }
+
+        }
+
+        stage('Show Rollout Status') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh """
+                kubectl argo rollouts get rollout simple-html-app \
+                -n ${NAMESPACE}
+                """
+            }
+        }
+
+        stage('Cleanup Local Images') {
+            steps {
+                sh '''
+					docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
+					docker rmi ${BACKEND_IMAGE}:${IMAGE_TAG} || true
+                    docker image prune -f
+                    docker system prune -af
+                '''
+            }
+        }
+    }
+
+    post {
+
+        success {
+
+            echo "================================="
+            echo "Progressive Delivery Completed"
+            echo "Namespace : ${NAMESPACE}"
+            echo "Image     : ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "================================="
+
+        }
+
+        failure {
+
+            echo "================================="
+            echo "Progressive Delivery Failed"
+            echo "================================="
+
+        }
+
+    }
+
+}

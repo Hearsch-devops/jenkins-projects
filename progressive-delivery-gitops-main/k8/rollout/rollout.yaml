@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+
+metadata:
+  name: simple-html-app
+  namespace: progressive-delivery
+
+spec:
+  replicas: 3
+
+#Keeps only the latest 3 ReplicaSets.
+  revisionHistoryLimit: 3
+
+  analysis:
+  #Keeps only the latest 5 successful AnalysisRuns.
+    successfulRunHistoryLimit: 3
+  #Keeps only the latest 3 failed AnalysisRuns, which is usually enough for troubleshooting.
+    unsuccessfulRunHistoryLimit: 3
+
+  selector:
+    matchLabels:
+      app: simple-html-app
+
+  template:
+    metadata:
+      labels:
+        app: simple-html-app
+
+    spec:
+      containers:
+      - name: app
+        image: 95337/simple-html-app:6242223-9
+        ports:
+        - containerPort: 80
+
+  strategy:
+    canary:
+      stableService: simple-html-stable-service
+      canaryService: simple-html-canary-service
+
+      steps:
+
+        - setWeight: 20
+
+        - analysis:
+            templates:
+              - templateName: success-rate
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+
+        - setWeight: 50
+
+        - analysis:
+            templates:
+              - templateName: success-rate
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+
+        - setWeight: 100
