@@ -1,0 +1,150 @@
+pipeline {
+
+    agent any
+
+    environment {
+        IMAGE_NAME = "95337/simple-html-app"
+        //IMAGE_TAG  = "${BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Display Branch') {
+            steps {
+                echo "Current Branch: ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker_login',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+
+                    if(env.BRANCH_NAME == 'staging') {
+                        env.IMAGE_TAG = "staging-${BUILD_NUMBER}"
+                    }
+
+                    if(env.BRANCH_NAME == 'main') {
+                        env.IMAGE_TAG = "prod-${BUILD_NUMBER}"
+                    }
+
+                    echo "Image Tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                '''
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                sh '''
+                docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                '''
+            }
+        }
+
+        stage('Deploy To Staging') {
+
+            when {
+                branch 'staging'
+            }
+
+            steps {
+
+                sh """
+                sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8/staging/deployment.yaml
+
+                kubectl apply -f k8/staging/deployment.yaml
+                kubectl apply -f k8/staging/service.yaml
+
+                kubectl rollout status deployment/simple-html-app -n staging
+                """
+            }
+        }
+
+        stage('Approval For Production') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+                input message: 'Deploy to Production?'
+            }
+        }
+
+        stage('Deploy To Production') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8/production/deployment.yaml
+
+                kubectl apply -f k8/production/deployment.yaml
+                kubectl apply -f k8/production/service.yaml
+
+                kubectl rollout status deployment/simple-html-app -n production
+                """
+            }
+        }
+    }
+
+    post {
+
+        always {
+            sh 'docker system prune -f'
+        }
+
+        success {
+
+            script {
+
+                if(env.BRANCH_NAME == 'staging') {
+
+                    echo "====================================="
+                    echo "STAGING Deployment Successful"
+                    echo "URL: http://192.168.48.169:30080"
+                    echo "====================================="
+                }
+
+                if(env.BRANCH_NAME == 'main') {
+
+                    echo "====================================="
+                    echo "PRODUCTION Deployment Successful"
+                    echo "URL: http://192.168.48.169:30081"
+                    echo "====================================="
+                }
+            }
+        }
+
+        failure {
+            echo 'Pipeline failed'
+        }
+    }
+}
