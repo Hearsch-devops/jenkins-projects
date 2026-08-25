@@ -1,0 +1,79 @@
+pipeline{
+    agent any
+    environment{
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_NAME = "95337/simple-html-app"
+    }
+
+    stages{
+    
+        stage('Login-gitlab'){
+            steps{
+                git branch: 'main',
+                    credentialsId: 'gitlab-creds',
+                    url: 'https://gitlab.com/jenkins-group2155922/kubernetes-project.git'
+            }
+        }
+
+        stage('docker-login'){
+            steps{
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker_login',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+
+                    sh '''
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('build-docker-image'){
+            steps{
+                sh '''
+                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    echo "Docker image Creating!!!"
+                '''
+            }
+        }
+
+        stage('push-docker-image'){
+            steps{
+                sh '''
+                    docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                    echo "Docker image pushing to Docker hub"
+                '''
+            }
+        }
+
+// s|search_text|replace_text|options. sed = Stream Editor, s=substitute, g=global, -i=print the modified content to the screen
+        stage('create-k8-pod'){
+            steps{
+                sh """
+                sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' deployment.yaml
+
+                kubectl apply -f deployment.yaml
+                kubectl apply -f service.yaml
+                """
+            }
+        }
+
+    }
+    post {
+
+        always {
+            sh 'docker system prune -f'
+        }
+
+        success {
+            echo "Pipeline run successfully"
+        }
+
+        failure {
+            echo "Pipeline failed"
+        }
+    }
+
+}
