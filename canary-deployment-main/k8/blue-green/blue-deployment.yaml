@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: simple-html-app-blue
+  namespace: blue-green-deploy
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: simple-html-app
+      version: blue
+
+  template:
+    metadata:
+      labels:
+        app: simple-html-app
+        version: blue
+
+    spec:
+      containers:
+      - name: app
+        image: IMAGE_PLACEHOLDER
+        ports:
+        - containerPort: 80

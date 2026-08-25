@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: simple-html-app-canary
+  namespace: canary-deploy
+  
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: simple-html-app
+      version: canary
+
+  template:
+    metadata:
+      labels:
+        app: simple-html-app
+        version: canary
+
+    spec:
+      containers:
+      - name: app
+        image: IMAGE_PLACEHOLDER
+        ports:
+        - containerPort: 80

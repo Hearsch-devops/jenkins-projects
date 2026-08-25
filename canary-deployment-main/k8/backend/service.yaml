@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: deployment-dashboard-backend-service
+  namespace: canary-deploy
+
+spec:
+  selector:
+    app: deployment-dashboard-backend
+
+  ports:
+  - port: 5000
+    targetPort: 5000
+
+  type: ClusterIP

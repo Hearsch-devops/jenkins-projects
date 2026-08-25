@@ -1,0 +1,571 @@
+pipeline {
+
+    agent any
+
+    environment {
+        IMAGE_NAME = "95337/simple-html-app"
+        BACKEND_IMAGE = "95337/deployment-dashboard-backend"
+        STAGING_NAMESPACE = "staging"
+        PROD_NAMESPACE    = "canary-deploy"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Display Branch') {
+            steps {
+                echo "Branch: ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Initialize Environment') {
+            steps {
+                script {
+
+                    if (env.BRANCH_NAME == "staging") {
+                        env.NAMESPACE = env.STAGING_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "staging"
+                    } else if (env.BRANCH_NAME == "main") {
+                        env.NAMESPACE = env.PROD_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "production"
+                    } else {
+                        error "Unsupported branch: ${env.BRANCH_NAME}"
+                    }
+
+                    echo "Deployment Type : ${env.DEPLOYMENT_TYPE}"
+                    echo "Namespace       : ${env.NAMESPACE}"
+                }
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker_login',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+
+                    env.SHORT_COMMIT = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${env.SHORT_COMMIT}-${env.BUILD_NUMBER}"
+
+                    env.DEPLOY_TIME = sh(
+                        script: "date '+%d %b %Y %H:%M UTC'",
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Image : ${IMAGE_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Dashboard') {
+            when {
+                branch 'staging'
+            }
+
+            steps {
+                script {
+
+                    def environment = "STAGING"
+                    def namespace = env.STAGING_NAMESPACE
+                    def strategy = "STANDARD"
+
+                    sh """
+                    sed -i "s|{{ENVIRONMENT}}|${environment}|g" app/index.html
+                    sed -i "s|{{DEPLOYMENT_STRATEGY}}|${strategy}|g" app/index.html
+
+                    sed -i "s|{{BRANCH}}|${env.BRANCH_NAME}|g" app/index.html
+                    sed -i "s|{{IMAGE}}|${IMAGE_NAME}:${IMAGE_TAG}|g" app/index.html
+                    sed -i "s|{{COMMIT}}|${SHORT_COMMIT}|g" app/index.html
+                    sed -i "s|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g" app/index.html
+                    sed -i "s|{{DEPLOY_TIME}}|${DEPLOY_TIME}|g" app/index.html
+                    sed -i "s|{{NAMESPACE}}|${namespace}|g" app/index.html
+                    sed -i "s|{{SERVICE_PORT}}|30083|g" app/index.html
+
+                    sed -i "s|{{ENV_CLASS}}|staging|g" app/index.html
+                    sed -i "s|{{STRATEGY_CLASS}}|bg|g" app/index.html
+                    """
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            when {
+                branch 'staging'
+            }
+            steps {
+                sh """
+                docker build \
+                  -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                  ./app
+                """
+            }
+        }
+
+        stage('Push Docker Image') {
+            when {
+                branch 'staging'
+            }
+            steps {
+                sh """
+                docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                """
+            }
+        }
+
+        stage('Build Backend Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker build \
+                -t ${BACKEND_IMAGE}:${IMAGE_TAG} \
+                ./backend
+                """
+
+            }
+        }
+
+        stage('Push Backend Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
+                """
+
+            }
+        }
+
+        stage('Deploy Backend') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                kubectl apply -f k8/backend/serviceaccount.yaml
+                kubectl apply -f k8/backend/role.yaml
+                kubectl apply -f k8/backend/rolebinding.yaml
+
+                cp k8/backend/deployment.yaml /tmp/backend.yaml
+
+                sed -i "s|IMAGE_NAME|${BACKEND_IMAGE}:${IMAGE_TAG}|g" /tmp/backend.yaml
+
+                kubectl apply -f /tmp/backend.yaml
+
+                kubectl apply -f k8/backend/service.yaml
+
+                kubectl rollout status deployment/deployment-dashboard-backend \
+                -n canary-deploy \
+                --timeout=120s
+                """
+
+            }
+        }
+
+        stage('Verify Backend') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                kubectl get pods -n canary-deploy
+
+                kubectl get svc -n canary-deploy
+
+                kubectl get endpoints deployment-dashboard-backend-service \
+                -n canary-deploy
+                """
+
+            }
+        }
+
+        stage('Create Stable Dashboard') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh "cp app/index.html app/index-stable.html"
+
+                script {
+
+                    sh """
+                    sed -i "s|{{ENVIRONMENT}}|PRODUCTION|g" app/index-stable.html
+                    sed -i "s|{{DEPLOYMENT_STRATEGY}}|CANARY|g" app/index-stable.html
+
+                    sed -i "s|{{ENV_CLASS}}|production|g" app/index-stable.html
+                    sed -i "s|{{STRATEGY_CLASS}}|stable|g" app/index-stable.html
+
+                    sed -i "s|{{BRANCH}}|${env.BRANCH_NAME}|g" app/index-stable.html
+                    sed -i "s|{{IMAGE}}|${IMAGE_NAME}:stable-${SHORT_COMMIT}-${BUILD_NUMBER}|g" app/index-stable.html
+                    sed -i "s|{{COMMIT}}|${SHORT_COMMIT}|g" app/index-stable.html
+                    sed -i "s|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g" app/index-stable.html
+                    sed -i "s|{{DEPLOY_TIME}}|${DEPLOY_TIME}|g" app/index-stable.html
+                    sed -i "s|{{NAMESPACE}}|canary-deploy|g" app/index-stable.html
+                    sed -i "s|{{SERVICE_PORT}}|30083|g" app/index-stable.html
+
+                    """
+                }
+            }
+        }
+
+        stage('Build Stable Image') {
+            when {
+                branch 'main'
+            }
+            steps {
+
+                sh """
+                cp app/index-stable.html app/index.html
+
+                docker build \
+                -t ${IMAGE_NAME}:stable-${SHORT_COMMIT}-${BUILD_NUMBER} \
+                ./app
+                """
+            }
+        }
+
+        stage('Push Stable Image') {
+            when {
+                branch 'main'
+            }
+            steps {
+
+                sh """
+                docker push ${IMAGE_NAME}:stable-${SHORT_COMMIT}-${BUILD_NUMBER}
+                """
+
+            }
+        }
+
+        stage('Create Canary Dashboard') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh "cp app/index.html app/index-canary.html"
+
+                script {
+
+                    sh """
+                    sed -i "s|{{ENVIRONMENT}}|PRODUCTION|g" app/index-canary.html
+                    sed -i "s|{{DEPLOYMENT_STRATEGY}}|CANARY|g" app/index-canary.html
+
+                    sed -i "s|{{ENV_CLASS}}|production|g" app/index-canary.html
+                    sed -i "s|{{STRATEGY_CLASS}}|canary|g" app/index-canary.html
+
+                    sed -i "s|{{BRANCH}}|${env.BRANCH_NAME}|g" app/index-canary.html
+                    sed -i "s|{{IMAGE}}|${IMAGE_NAME}:canary-${SHORT_COMMIT}-${BUILD_NUMBER}|g" app/index-canary.html
+                    sed -i "s|{{COMMIT}}|${SHORT_COMMIT}|g" app/index-canary.html
+                    sed -i "s|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g" app/index-canary.html
+                    sed -i "s|{{DEPLOY_TIME}}|${DEPLOY_TIME}|g" app/index-canary.html
+                    sed -i "s|{{NAMESPACE}}|canary-deploy|g" app/index-canary.html
+                    sed -i "s|{{SERVICE_PORT}}|30083|g" app/index-canary.html
+
+                    """
+                }
+            }
+        }
+
+        stage('Build Canary Image') {
+            when {
+                branch 'main'
+            }
+            steps {
+
+                sh """
+                cp app/index-canary.html app/index.html
+
+                docker build \
+                -t ${IMAGE_NAME}:canary-${SHORT_COMMIT}-${BUILD_NUMBER} \
+                ./app
+                """
+            }
+        }
+
+        stage('Push Canary Image') {
+            when {
+                branch 'main'
+            }
+            steps {
+
+                sh """
+                docker push ${IMAGE_NAME}:canary-${SHORT_COMMIT}-${BUILD_NUMBER}
+                """
+
+            }
+        }
+
+        stage('Create Namespace') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh """
+                kubectl apply -f k8/canary/namespace.yaml
+                """
+            }
+
+        }
+
+        stage('Deploy Stable') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh """
+                cp k8/canary/stable-deployment.yaml /tmp/stable.yaml
+
+                sed -i "s|IMAGE_PLACEHOLDER|${IMAGE_NAME}:stable-${SHORT_COMMIT}-${BUILD_NUMBER}|g" /tmp/stable.yaml
+
+                kubectl apply -f /tmp/stable.yaml
+
+                kubectl rollout status deployment/simple-html-app-stable \
+                -n ${NAMESPACE} \
+                --timeout=120s
+                """
+            }
+
+        }
+
+        stage('Deploy Canary') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh """
+                cp k8/canary/canary-deployment.yaml /tmp/canary.yaml
+
+                sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:canary-${SHORT_COMMIT}-${BUILD_NUMBER}|g' /tmp/canary.yaml
+
+                kubectl apply -f /tmp/canary.yaml
+
+                kubectl rollout status deployment/simple-html-app-canary \
+                -n ${NAMESPACE} \
+                --timeout=120s
+                """
+            }
+
+        }
+
+        stage('Deploy Service') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh """
+                kubectl apply -f k8/canary/service.yaml
+                """
+            }
+
+        }
+
+        stage('Validate Deployment') {
+
+            steps {
+
+                script {
+
+                    if (env.BRANCH_NAME == "staging") {
+
+                        sh """
+                        kubectl get pods -n ${NAMESPACE}
+
+                        kubectl rollout status deployment/simple-html-app \
+                        -n ${NAMESPACE}
+                        """
+
+                    }
+                    else {
+
+                        sh """
+
+                        kubectl get deployment -n ${NAMESPACE}
+
+                        kubectl get pods -n ${NAMESPACE}
+
+                        kubectl rollout status deployment/simple-html-app-stable \
+                        -n ${NAMESPACE}
+
+                        kubectl rollout status deployment/simple-html-app-canary \
+                        -n ${NAMESPACE}
+
+                        """
+
+                    }
+
+                }
+
+            }
+
+        }
+        
+        stage('Verify Deployment') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                kubectl get deployment -n ${NAMESPACE}
+
+                kubectl get pods -o wide -n ${NAMESPACE}
+
+                kubectl get svc -n ${NAMESPACE}
+
+                kubectl get endpoints -n ${NAMESPACE}
+
+                """
+
+            }
+
+        }
+
+        stage('Approval') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                input "Increase Canary Traffic?"
+
+            }
+
+        }
+
+        stage('Increase Canary Traffic') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh """
+
+                kubectl scale deployment simple-html-app-stable \
+                --replicas=2 \
+                -n ${NAMESPACE}
+
+                kubectl scale deployment simple-html-app-canary \
+                --replicas=2 \
+                -n ${NAMESPACE}
+
+                """
+            }
+
+        }
+
+        stage('Promote Canary') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                input "Promote Canary?"
+
+                sh """
+                kubectl scale deployment simple-html-app-stable \
+                --replicas=0 \
+                -n ${NAMESPACE}
+
+                kubectl scale deployment simple-html-app-canary \
+                --replicas=4 \
+                -n ${NAMESPACE}
+                """
+            }
+
+        }
+
+        stage('Deployment Summary') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh '''
+                echo "===== Deployments ====="
+                kubectl get deploy -n canary-deploy
+
+                echo ""
+                echo "===== Pods ====="
+                kubectl get pods -o wide -n canary-deploy
+
+                echo ""
+                echo "===== Service ====="
+                kubectl describe svc simple-html-canary-service -n canary-deploy
+
+                echo ""
+                echo "===== Endpoints ====="
+                kubectl get endpoints simple-html-canary-service -n canary-deploy
+                '''
+            }
+        }
+    }
+
+    post {
+
+        success {
+
+            echo "================================="
+            echo "Deployment Type : ${env.DEPLOYMENT_TYPE}"
+            echo "Namespace       : ${env.NAMESPACE}"
+            echo "Image           : ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "================================="
+        }
+
+        failure {
+            echo "================================="
+            echo "DEPLOYMENT FAILED"
+            echo "================================="
+        }
+    }
+}

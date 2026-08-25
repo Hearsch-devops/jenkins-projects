@@ -1,0 +1,17 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+
+metadata:
+  name: deployment-dashboard-rolebinding
+  namespace: canary-deploy
+
+subjects:
+
+- kind: ServiceAccount
+  name: deployment-dashboard-sa
+  namespace: canary-deploy
+
+roleRef:
+  kind: Role
+  name: deployment-dashboard-role
+  apiGroup: rbac.authorization.k8s.io

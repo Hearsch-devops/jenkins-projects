@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: deployment-dashboard-backend
+  namespace: canary-deploy
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: deployment-dashboard-backend
+
+  template:
+    metadata:
+      labels:
+        app: deployment-dashboard-backend
+
+    spec:
+      serviceAccountName: deployment-dashboard-sa
+
+      containers:
+      - name: deployment-dashboard-backend
+        image: IMAGE_NAME
+        imagePullPolicy: Always
+
+        ports:
+        - containerPort: 5000
