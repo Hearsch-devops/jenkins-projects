@@ -1,0 +1,30 @@
+pipeline{
+    agent any
+    stages{
+        stage('Gitlab-Test'){
+            steps{
+                echo "Gitlab testing"
+            }
+        }
+        stage('Dev'){
+            steps{
+                echo "Hello World from Dev multi-stages"
+            }
+        }
+        stage('UAT'){
+            steps{
+                echo "Hello World from UAT multi-stages"
+            }
+        }
+    }
+
+    post{
+        success{
+            echo "Pipeline run successfully!!!"
+        }
+
+        failure{
+            echo "Pipeline Failed"
+        }
+    }
+}
