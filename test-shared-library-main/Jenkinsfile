@@ -1,0 +1,86 @@
+@Library('devops-lib') _
+
+pipeline {
+
+    agent any
+
+    environment {
+        IMAGE_NAME = "95337/simple-html-app"
+    }
+
+    stages {
+
+        stage('Display Branch') {
+            steps {
+                echo "Current Branch: ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                dockerLogin()
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+                    setImageTag()
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                dockerBuild(env.IMAGE_NAME, env.IMAGE_TAG)
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                dockerPush(env.IMAGE_NAME, env.IMAGE_TAG)
+            }
+        }
+
+        stage('Deploy Staging') {
+
+            when {
+                branch 'staging'
+            }
+
+            steps {
+                k8sDeploy(
+                    "staging",
+                    env.IMAGE_NAME,
+                    env.IMAGE_TAG
+                )
+            }
+        }
+
+        stage('Approval') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+                input "Deploy To Production?"
+            }
+        }
+
+        stage('Deploy Production') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+                k8sDeploy(
+                    "production",
+                    env.IMAGE_NAME,
+                    env.IMAGE_TAG
+                )
+            }
+        }
+    }
+}
