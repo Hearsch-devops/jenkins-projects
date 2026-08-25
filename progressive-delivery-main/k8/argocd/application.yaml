@@ -1,0 +1,92 @@
+helm repo add grafana https://grafana.github.io/helm-charts &&
+  helm repo update &&
+  helm upgrade --install --atomic --timeout 1200s grafana-k8s-monitoring grafana/k8s-monitoring \
+    --version "^4" --namespace "monitoring" --create-namespace --values - <<'EOF'
+cluster:
+  name: progressive-delivery-cluster
+destinations:
+  grafana-cloud-metrics:
+    type: prometheus
+    url: https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push
+    auth:
+      type: basic
+      username: "2859357"
+      password: "glc_eyJvIjoiMTYxNjA4MyIsIm4iOiJzdGFjay0xNDY3NTYyLWludGVncmF0aW9uLXByb2dyZXNzaXZlLWRlbGl2ZXJ5LWNsdXN0ZXItYWNjZXNzLXBvbGljeS10b2tlbi1wcm9ncmVzc2l2ZS1kZWxpdmVyeS1jbHVzdGVyLWFjY2Vzcy1wb2xpY3ktdG9rZW4iLCJrIjoiSDFuQng2NTc5NzFhdlhOMDh5UEQ0SmNKIiwibSI6eyJyIjoicHJvZC11cy1lYXN0LTMifX0="
+    tls:
+      insecureSkipVerify: true
+  grafana-cloud-logs:
+    type: loki
+    url: https://logs-prod-042.grafana.net/loki/api/v1/push
+    auth:
+      type: basic
+      username: "1425355"
+      password: "glc_eyJvIjoiMTYxNjA4MyIsIm4iOiJzdGFjay0xNDY3NTYyLWludGVncmF0aW9uLXByb2dyZXNzaXZlLWRlbGl2ZXJ5LWNsdXN0ZXItYWNjZXNzLXBvbGljeS10b2tlbi1wcm9ncmVzc2l2ZS1kZWxpdmVyeS1jbHVzdGVyLWFjY2Vzcy1wb2xpY3ktdG9rZW4iLCJrIjoiSDFuQng2NTc5NzFhdlhOMDh5UEQ0SmNKIiwibSI6eyJyIjoicHJvZC11cy1lYXN0LTMifX0="
+    tls:
+      insecureSkipVerify: true
+clusterMetrics:
+  enabled: true
+  collector: alloy-metrics
+hostMetrics:
+  enabled: true
+  collector: alloy-metrics
+  linuxHosts:
+    enabled: true
+  windowsHosts:
+    enabled: true
+  energyMetrics:
+    enabled: true
+annotationAutodiscovery:
+  enabled: true
+  collector: alloy-metrics
+  destinations:
+    - grafana-cloud-metrics
+costMetrics:
+  enabled: true
+  collector: alloy-metrics
+clusterEvents:
+  enabled: true
+  collector: alloy-singleton
+podLogsViaLoki:
+  enabled: true
+  collector: alloy-logs
+collectors:
+  alloy-metrics:
+    presets:
+      - clustered
+      - statefulset
+  alloy-singleton:
+    presets:
+      - singleton
+  alloy-logs:
+    presets:
+      - filesystem-log-reader
+      - daemonset
+collectorCommon:
+  alloy:
+    remoteConfig:
+      enabled: false
+      url: https://fleet-management-prod-028.grafana.net
+      auth:
+        type: basic
+        username: "1467562"
+        password: "glc_eyJvIjoiMTYxNjA4MyIsIm4iOiJzdGFjay0xNDY3NTYyLWludGVncmF0aW9uLXByb2dyZXNzaXZlLWRlbGl2ZXJ5LWNsdXN0ZXItYWNjZXNzLXBvbGljeS10b2tlbi1wcm9ncmVzc2l2ZS1kZWxpdmVyeS1jbHVzdGVyLWFjY2Vzcy1wb2xpY3ktdG9rZW4iLCJrIjoiSDFuQng2NTc5NzFhdlhOMDh5UEQ0SmNKIiwibSI6eyJyIjoicHJvZC11cy1lYXN0LTMifX0="
+telemetryServices:
+  kube-state-metrics:
+    deploy: true
+  node-exporter:
+    deploy: true
+  windows-exporter:
+    deploy: true
+  opencost:
+    deploy: true
+    metricsSource: grafana-cloud-metrics
+    opencost:
+      exporter:
+        defaultClusterId: progressive-delivery-cluster
+      prometheus:
+        existingSecretName: grafana-cloud-metrics-grafana-k8s-monitoring
+        external:
+          url: https://prometheus-prod-66-prod-us-east-3.grafana.net./api/prom
+  kepler:
+    deploy: true
+EOF

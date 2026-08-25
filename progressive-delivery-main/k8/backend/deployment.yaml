@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: deployment-dashboard-backend
+  namespace: progressive-delivery
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: deployment-dashboard-backend
+
+  template:
+    metadata:
+      labels:
+        app: deployment-dashboard-backend
+
+    spec:
+
+      serviceAccountName: deployment-dashboard-sa
+
+      containers:
+
+      - name: backend
+
+        image: BACKEND_IMAGE_PLACEHOLDER
+
+        imagePullPolicy: Always
+
+        ports:
+        - containerPort: 5000
+
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+        livenessProbe:
+          tcpSocket:
+            port: 5000
+          initialDelaySeconds: 20
+          periodSeconds: 10

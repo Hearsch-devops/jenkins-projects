@@ -1,0 +1,391 @@
+pipeline {
+
+    agent any
+
+    environment {
+        IMAGE_NAME = "95337/simple-html-app"
+        BACKEND_IMAGE = "95337/deployment-dashboard-backend"
+
+        STAGING_NAMESPACE = "staging"
+        PROD_NAMESPACE    = "progressive-delivery"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Display Branch') {
+            steps {
+                echo "Branch : ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Initialize Environment') {
+ 
+            steps {
+
+                script {
+
+                    if (env.BRANCH_NAME == "staging") {
+                        env.NAMESPACE = env.STAGING_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "Staging"
+                    }
+                    else if (env.BRANCH_NAME == "main") {
+                        env.NAMESPACE = env.PROD_NAMESPACE
+                        env.DEPLOYMENT_TYPE = "Progressive Delivery"
+                    }
+                    else {
+                        error "Unsupported Branch"
+                    }
+
+                }
+
+            }
+
+        }
+
+        stage('Docker Login') {
+
+            steps {
+
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker_login',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login \
+                    -u "$DOCKER_USER" \
+                    --password-stdin
+                    '''
+
+                }
+
+            }
+
+        }
+
+        stage('Set Image Tag') {
+
+            steps {
+
+                script {
+
+                    env.SHORT_COMMIT = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG="${SHORT_COMMIT}-${BUILD_NUMBER}"
+
+                    env.DEPLOY_TIME = sh(
+                        script: "date '+%d %b %Y %H:%M UTC'",
+                        returnStdout: true
+                    ).trim()
+
+                }
+
+            }
+
+        }
+
+        stage('Create Dashboard') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                sed -i "s|{{ENVIRONMENT}}|PRODUCTION|g" app/index.html
+                sed -i "s|{{DEPLOYMENT_STRATEGY}}|PROGRESSIVE DELIVERY|g" app/index.html
+
+                sed -i "s|{{BRANCH}}|${env.BRANCH_NAME}|g" app/index.html
+                sed -i "s|{{IMAGE}}|${IMAGE_NAME}:${IMAGE_TAG}|g" app/index.html
+                sed -i "s|{{COMMIT}}|${SHORT_COMMIT}|g" app/index.html
+                sed -i "s|{{BUILD_NUMBER}}|${BUILD_NUMBER}|g" app/index.html
+                sed -i "s|{{DEPLOY_TIME}}|${DEPLOY_TIME}|g" app/index.html
+                sed -i "s|{{NAMESPACE}}|${NAMESPACE}|g" app/index.html
+                sed -i "s|{{SERVICE_PORT}}|30083|g" app/index.html
+
+                sed -i "s|{{ENV_CLASS}}|production|g" app/index.html
+                sed -i "s|{{STRATEGY_CLASS}}|progressive|g" app/index.html
+
+                """
+
+            }
+
+        }
+
+        stage('Build Docker Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker build \
+                -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                ./app
+                """
+
+            }
+
+        }
+
+        stage('Push Docker Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                """
+
+            }
+
+        }
+
+        stage('Build Backend Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker build \
+                -t ${BACKEND_IMAGE}:${IMAGE_TAG} \
+                ./backend
+                """
+
+            }
+
+        }
+
+        stage('Push Backend Image') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
+                """
+
+            }
+
+        }
+
+        stage('Deploy Backend') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                kubectl apply -f k8/rbac/serviceaccount.yaml
+                kubectl apply -f k8/rbac/role.yaml
+                kubectl apply -f k8/rbac/rolebinding.yaml
+
+                cp k8/backend/deployment.yaml /tmp/backend.yaml
+
+                sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${BACKEND_IMAGE}:${IMAGE_TAG}|g" /tmp/backend.yaml
+
+                kubectl apply -f /tmp/backend.yaml
+
+                kubectl apply -f k8/backend/service.yaml
+
+                kubectl rollout status deployment/deployment-dashboard-backend \
+                -n ${NAMESPACE} \
+                --timeout=300s
+
+                """
+
+            }
+
+        }
+
+        stage('Create Namespace') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+                kubectl apply -f k8/namespace.yaml
+                """
+
+            }
+
+        }
+
+        stage('Deploy Services') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                kubectl apply -f k8/rollout/stable-service.yaml
+                kubectl apply -f k8/rollout/canary-service.yaml
+
+                """
+
+            }
+
+        }
+
+        stage('Deploy AnalysisTemplate') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                kubectl apply \
+                -f k8/rollout/analysis-template.yaml
+
+                """
+
+            }
+
+        }
+
+        stage('Deploy Rollout') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                cp k8/rollout/rollout.yaml \
+                /tmp/rollout.yaml
+
+                sed -i \
+                "s|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g" \
+                /tmp/rollout.yaml
+
+                kubectl apply -f /tmp/rollout.yaml
+
+                """
+
+            }
+
+        }
+
+        stage('Deploy blackbox-exporter-Monitoring') {
+            steps {
+                sh '''
+                    echo "Deploying Grafana Kubernetes blackbox-exporter Monitoring..."
+
+                    kubectl apply \
+                    -n progressive-delivery \
+                    -f k8/monitoring/blackbox-exporter.yaml
+                '''
+            }
+        }
+
+        stage('Verify Rollout') {
+
+            when {
+                branch 'main'
+            }
+
+            steps {
+
+                sh """
+
+                kubectl get rollout -n ${NAMESPACE}
+
+                kubectl get pods -n ${NAMESPACE}
+
+                kubectl get svc -n ${NAMESPACE}
+
+                kubectl get analysisrun -n ${NAMESPACE}
+
+                """
+
+            }
+
+        }
+
+        stage('Show Rollout Status') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh """
+                kubectl argo rollouts get rollout simple-html-app \
+                -n ${NAMESPACE}
+                """
+            }
+        }
+
+        stage('Cleanup Local Images') {
+            steps {
+                sh '''
+                    docker rmi ${FRONTEND_IMAGE}:${IMAGE_TAG} || true
+                    docker rmi ${BACKEND_IMAGE}:${IMAGE_TAG} || true
+                    docker image prune -f
+                    docker system prune -af
+                '''
+            }
+        }
+    }
+
+    post {
+
+        success {
+
+            echo "================================="
+            echo "Progressive Delivery Completed"
+            echo "Namespace : ${NAMESPACE}"
+            echo "Image     : ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "================================="
+
+        }
+
+        failure {
+
+            echo "================================="
+            echo "Progressive Delivery Failed"
+            echo "================================="
+
+        }
+
+    }
+
+}

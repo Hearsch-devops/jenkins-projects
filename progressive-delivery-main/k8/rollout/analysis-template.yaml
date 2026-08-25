@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+
+metadata:
+  name: success-rate
+  namespace: progressive-delivery
+
+spec:
+  args:
+
+    - name: grafana-auth
+      valueFrom:
+        secretKeyRef:
+          name: grafana-prometheus-auth
+          key: authorization
+
+    - name: canary-hash
+
+  metrics:
+    - name: running-pods
+      interval: 30s
+      count: 3
+
+      successCondition: result[0] >= 1
+      failureLimit: 2
+
+      provider:
+        prometheus:
+          address: https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom
+
+          insecure: true
+
+          headers:
+            - key: Authorization
+              value: "{{ args.grafana-auth }}"
+
+          query: |
+            probe_success{job="blackbox-canary"}
+
+      successCondition: result[0] == 1
